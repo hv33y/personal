@@ -26,9 +26,12 @@ try:
 except FileNotFoundError:
     last_status = {}
 
+# UPS API endpoints (production)
+UPS_AUTH_URL = "https://onlinetools.ups.com/security/v1/oauth/token"
+UPS_TRACK_URL = "https://onlinetools.ups.com/api/track/v1/details"
+
 def get_access_token():
     """Get OAuth token from UPS"""
-    url = "https://wwwcie.ups.com/security/v1/oauth/token"  # use onlinetools.ups.com for production
     creds = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}"
     b64_creds = base64.b64encode(creds.encode()).decode()
     headers = {
@@ -36,24 +39,33 @@ def get_access_token():
         "Authorization": f"Basic {b64_creds}"
     }
     data = {"grant_type": "client_credentials"}
-    r = requests.post(url, headers=headers, data=data)
+    r = requests.post(UPS_AUTH_URL, headers=headers, data=data)
+    r.raise_for_status()
     return r.json()["access_token"]
 
 def get_tracking_status(tracking_number, token):
     """Fetch latest UPS tracking update"""
-    url = f"https://onlinetools.ups.com/api/track/v1/details/{tracking_number.strip()}"
+    url = f"{UPS_TRACK_URL}/{tracking_number.strip()}"
     headers = {
         "Authorization": f"Bearer {token}",
         "transId": str(uuid.uuid4()),
         "transactionSrc": "ups-sms-notifier"
     }
     r = requests.get(url, headers=headers)
+    r.raise_for_status()
     data = r.json()
+
+    # Debug: if structure is unexpected, log entire response
+    if "trackResponse" not in data:
+        print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
+        return "No tracking info found"
+
     try:
         status = data["trackResponse"]["shipment"][0]["package"][0]["activity"][0]["status"]["description"]
         return status
     except Exception as e:
-        return f"Error: {e}"
+        print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
+        return f"Error parsing: {e}"
 
 def send_sms(message):
     client.messages.create(
@@ -72,6 +84,8 @@ def main():
             print(msg)
             send_sms(msg)
             last_status[tracking] = status
+        else:
+            print(f"No new update for {tracking}: {status}")
     with open(status_file, "w") as f:
         json.dump(last_status, f)
 
