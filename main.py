@@ -17,7 +17,7 @@ client = Client(account_sid, auth_token)
 UPS_CLIENT_ID = os.getenv("UPS_CLIENT_ID")
 UPS_CLIENT_SECRET = os.getenv("UPS_CLIENT_SECRET")
 tracking_numbers = os.getenv("UPS_TRACKINGS").split(",")  # comma-separated
-tracking_nicknames = os.getenv("UPS_NICKNAMES", "").split(",")  # optional, same order
+tracking_nicknames = os.getenv("UPS_NICKNAMES", "").split(",")  # optional
 
 status_file = "ups_status.json"
 
@@ -90,8 +90,14 @@ def main():
     global last_status
     token = get_access_token()
     for idx, tracking in enumerate(tracking_numbers):
-        nickname = tracking_nicknames[idx] if idx < len(tracking_nicknames) else tracking
+        # Use nickname if provided, else fallback to tracking number
+        if idx < len(tracking_nicknames) and tracking_nicknames[idx].strip():
+            nickname = tracking_nicknames[idx].strip()
+        else:
+            nickname = tracking.strip()
+
         status, location = get_tracking_status(tracking, token)
+
         if status and last_status.get(tracking) != status:
             msg = f"{nickname} Update: {status}"
             if location:
@@ -101,6 +107,7 @@ def main():
             last_status[tracking] = status
         else:
             print(f"No new update for {nickname}: {status}")
+
     with open(status_file, "w") as f:
         json.dump(last_status, f)
 
