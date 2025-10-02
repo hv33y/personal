@@ -26,7 +26,7 @@ try:
 except FileNotFoundError:
     last_status = {}
 
-# UPS API endpoints (production)
+# UPS Production endpoints
 UPS_AUTH_URL = "https://onlinetools.ups.com/security/v1/oauth/token"
 UPS_TRACK_URL = "https://onlinetools.ups.com/api/track/v1/details"
 
@@ -52,10 +52,15 @@ def get_tracking_status(tracking_number, token):
         "transactionSrc": "ups-sms-notifier"
     }
     r = requests.get(url, headers=headers)
-    r.raise_for_status()
+
+    # Log if request failed
+    if r.status_code != 200:
+        print("UPS ERROR:", r.status_code, r.text)
+        r.raise_for_status()
+
     data = r.json()
 
-    # Debug: if structure is unexpected, log entire response
+    # Debug log if response structure is unexpected
     if "trackResponse" not in data:
         print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
         return "No tracking info found"
