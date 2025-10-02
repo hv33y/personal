@@ -16,7 +16,8 @@ client = Client(account_sid, auth_token)
 # --- UPS OAuth setup ---
 UPS_CLIENT_ID = os.getenv("UPS_CLIENT_ID")
 UPS_CLIENT_SECRET = os.getenv("UPS_CLIENT_SECRET")
-tracking_numbers = os.getenv("UPS_TRACKINGS").split(",")
+tracking_numbers = os.getenv("UPS_TRACKINGS").split(",")  # comma-separated
+tracking_nicknames = os.getenv("UPS_NICKNAMES", "").split(",")  # optional, same order
 
 status_file = "ups_status.json"
 
@@ -31,7 +32,6 @@ UPS_AUTH_URL = "https://onlinetools.ups.com/security/v1/oauth/token"
 UPS_TRACK_URL = "https://onlinetools.ups.com/api/track/v1/details"
 
 def get_access_token():
-    """Get OAuth token from UPS"""
     creds = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}"
     b64_creds = base64.b64encode(creds.encode()).decode()
     headers = {
@@ -44,7 +44,6 @@ def get_access_token():
     return r.json()["access_token"]
 
 def get_tracking_status(tracking_number, token):
-    """Fetch latest UPS tracking update"""
     url = f"{UPS_TRACK_URL}/{tracking_number.strip()}"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -53,44 +52,55 @@ def get_tracking_status(tracking_number, token):
     }
     r = requests.get(url, headers=headers)
 
-    # Log if request failed
     if r.status_code != 200:
         print("UPS ERROR:", r.status_code, r.text)
         r.raise_for_status()
 
     data = r.json()
-
-    # Debug log if response structure is unexpected
     if "trackResponse" not in data:
         print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
-        return "No tracking info found"
+        return "No tracking info found", ""
 
     try:
-        status = data["trackResponse"]["shipment"][0]["package"][0]["activity"][0]["status"]["description"]
-        return status
+        activity = data["trackResponse"]["shipment"][0]["package"][0]["activity"][0]
+        status = activity["status"]["description"]
+
+        # Location info if available
+        location = activity.get("activityLocation", {}).get("address", {})
+        city = location.get("city", "")
+        state = location.get("stateProvince", "")
+        country = location.get("country", "")
+        loc_text = ", ".join(filter(None, [city, state, country]))
+
+        return status, loc_text
     except Exception as e:
         print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
-        return f"Error parsing: {e}"
+        return f"Error parsing: {e}", ""
 
 def send_sms(message):
-    client.messages.create(
+    msg = client.messages.create(
         body=message,
         from_=twilio_number,
         to=my_number
     )
+    print("Twilio SID:", msg.sid)
+    print("Twilio status:", msg.status)
 
 def main():
     global last_status
     token = get_access_token()
-    for tracking in tracking_numbers:
-        status = get_tracking_status(tracking, token)
+    for idx, tracking in enumerate(tracking_numbers):
+        nickname = tracking_nicknames[idx] if idx < len(tracking_nicknames) else tracking
+        status, location = get_tracking_status(tracking, token)
         if status and last_status.get(tracking) != status:
-            msg = f"UPS Update for {tracking}: {status}"
+            msg = f"{nickname} Update: {status}"
+            if location:
+                msg += f" ({location})"
             print(msg)
             send_sms(msg)
             last_status[tracking] = status
         else:
-            print(f"No new update for {tracking}: {status}")
+            print(f"No new update for {nickname}: {status}")
     with open(status_file, "w") as f:
         json.dump(last_status, f)
 
