@@ -1,0 +1,48 @@
+name: Test Twilio SMS
+
+on:
+  workflow_dispatch:  # allows manual run from Actions tab
+
+jobs:
+  send-sms:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install Twilio
+        run: pip install twilio
+
+      - name: Send Test SMS
+        run: |
+          python - <<EOF
+          from twilio.rest import Client
+          import os
+
+          account_sid = os.getenv("TWILIO_SID")
+          auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+          twilio_number = os.getenv("TWILIO_PHONE")
+          my_number = os.getenv("MY_PHONE")
+
+          client = Client(account_sid, auth_token)
+
+          message = client.messages.create(
+              body="Test SMS from GitHub Actions",
+              from_=twilio_number,
+              to=my_number
+          )
+
+          print("Twilio SID:", message.sid)
+          print("Twilio status:", message.status)
+          EOF
+        env:
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_PHONE: ${{ secrets.TWILIO_PHONE }}
+          MY_PHONE: ${{ secrets.MY_PHONE }}
