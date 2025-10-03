@@ -80,22 +80,25 @@ def get_tracking_status(tracking_number, token):
 def extract_location(activity):
     loc_parts = []
 
+    # 1️⃣ Address fields
     addr = activity.get("activityLocation", {}).get("address", {})
     for key in ["city", "stateProvince", "country"]:
         if addr.get(key):
             loc_parts.append(addr[key])
 
+    # 2️⃣ Facility description
     if not loc_parts:
         desc = activity.get("activityLocation", {}).get("locationTypeDescription")
         if desc:
             loc_parts.append(desc)
 
+    # 3️⃣ UPS code
     if not loc_parts:
         code = activity.get("activityLocation", {}).get("code")
         if code:
             loc_parts.append(code)
 
-    # shipment origin fallback
+    # 4️⃣ Shipment origin fallback
     if not loc_parts:
         shipment_info = activity.get("shipment", {}).get("shipFrom", {}).get("address", {})
         for key in ["city", "stateProvince", "country"]:
@@ -137,6 +140,27 @@ def format_message(nickname, status, location):
     ])
 
 # ==============================================================
+#  Status Table Printer
+# ==============================================================
+
+def print_status_table():
+    """Prints a clean table of tracking numbers and their last known status and location"""
+    print("\n📊 UPS Tracking Status Table")
+    print("-" * 60)
+    print(f"{'Nickname':<20} | {'Status':<25} | {'Location'}")
+    print("-" * 60)
+    for idx, tracking in enumerate(TRACKING_NUMBERS):
+        nickname = (
+            TRACKING_NAMES[idx].strip()
+            if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip()
+            else tracking.strip()
+        )
+        status = last_status.get(tracking, {}).get("status") if isinstance(last_status.get(tracking), dict) else last_status.get(tracking, "No info")
+        location = last_status.get(tracking, {}).get("location") if isinstance(last_status.get(tracking), dict) else "—"
+        print(f"{nickname:<20} | {status:<25} | {location}")
+    print("-" * 60 + "\n")
+
+# ==============================================================
 #  Main Logic
 # ==============================================================
 
@@ -153,16 +177,23 @@ def main():
 
         status, location = get_tracking_status(tracking, token)
 
-        if status and last_status.get(tracking) != status:
+        # Only send Telegram if status changed
+        previous_status = last_status.get(tracking, {}).get("status") if isinstance(last_status.get(tracking), dict) else last_status.get(tracking)
+        if status and previous_status != status:
             message = format_message(nickname, status, location)
             print("🔔", message.replace("\n", " | "))
             send_telegram(message)
-            last_status[tracking] = status
+            # Save as dict to track status and location
+            last_status[tracking] = {"status": status, "location": location}
         else:
             print(f"ℹ️ No new update for {nickname}: {status}")
 
+    # Save last known statuses
     with open(STATUS_FILE, "w") as f:
-        json.dump(last_status, f)
+        json.dump(last_status, f, indent=2)
+
+    # Print table for logs
+    print_status_table()
 
 # ==============================================================
 #  Run Script
