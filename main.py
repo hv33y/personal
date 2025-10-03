@@ -1,119 +1,179 @@
-import requests
-from twilio.rest import Client
 import os
 import json
-import base64
 import uuid
+import base64
+import requests
+from twilio.rest import Client
 
-# --- Twilio setup ---
-account_sid = os.getenv("TWILIO_SID")
-auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-twilio_number = os.getenv("TWILIO_PHONE")
-my_number = os.getenv("MY_PHONE")
+# ==============================================================
+#  Twilio Setup
+# ==============================================================
+ACCOUNT_SID     = os.getenv("TWILIO_SID")
+AUTH_TOKEN      = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_NUMBER   = os.getenv("TWILIO_PHONE")
+MY_NUMBER       = os.getenv("MY_PHONE")
 
-client = Client(account_sid, auth_token)
+twilio_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
-# --- UPS OAuth setup ---
-UPS_CLIENT_ID = os.getenv("UPS_CLIENT_ID")
+# ==============================================================
+#  UPS API Setup
+# ==============================================================
+UPS_CLIENT_ID     = os.getenv("UPS_CLIENT_ID")
 UPS_CLIENT_SECRET = os.getenv("UPS_CLIENT_SECRET")
-tracking_numbers = os.getenv("UPS_TRACKINGS").split(",")  # comma-separated
-tracking_nicknames = os.getenv("UPS_NICKNAMES", "").split(",")  # optional
 
-status_file = "ups_status.json"
+UPS_AUTH_URL   = "https://onlinetools.ups.com/security/v1/oauth/token"
+UPS_TRACK_URL  = "https://onlinetools.ups.com/api/track/v1/details"
+
+# Tracking numbers & optional nicknames (comma-separated in env vars)
+TRACKING_NUMBERS  = os.getenv("UPS_TRACKINGS").split(",")
+TRACKING_NAMES    = os.getenv("UPS_NICKNAMES", "").split(",")
+
+# Local cache to prevent duplicate SMS
+STATUS_FILE = "ups_status.json"
 
 try:
-    with open(status_file, "r") as f:
+    with open(STATUS_FILE, "r") as f:
         last_status = json.load(f)
 except FileNotFoundError:
     last_status = {}
 
-# UPS Production endpoints
-UPS_AUTH_URL = "https://onlinetools.ups.com/security/v1/oauth/token"
-UPS_TRACK_URL = "https://onlinetools.ups.com/api/track/v1/details"
+# ==============================================================
+#  UPS Helpers
+# ==============================================================
 
 def get_access_token():
+    """Request OAuth token from UPS API"""
     creds = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}"
     b64_creds = base64.b64encode(creds.encode()).decode()
+
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Authorization": f"Basic {b64_creds}"
     }
     data = {"grant_type": "client_credentials"}
-    r = requests.post(UPS_AUTH_URL, headers=headers, data=data)
-    r.raise_for_status()
-    return r.json()["access_token"]
+
+    response = requests.post(UPS_AUTH_URL, headers=headers, data=data)
+    response.raise_for_status()
+    return response.json()["access_token"]
+
 
 def get_tracking_status(tracking_number, token):
+    """Fetch latest UPS tracking status & location"""
     url = f"{UPS_TRACK_URL}/{tracking_number.strip()}"
     headers = {
         "Authorization": f"Bearer {token}",
         "transId": str(uuid.uuid4()),
         "transactionSrc": "ups-sms-notifier"
     }
-    r = requests.get(url, headers=headers)
 
-    if r.status_code != 200:
-        print("UPS ERROR:", r.status_code, r.text)
-        r.raise_for_status()
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    data = response.json()
 
-    data = r.json()
     if "trackResponse" not in data:
-        print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
-        return "No tracking info found", ""
+        print("⚠️ UPS API Debug:", json.dumps(data, indent=2))
+        return "No tracking info", "No location found"
 
     try:
-        activity = data["trackResponse"]["shipment"][0]["package"][0]["activity"][0]
-        status = activity["status"]["description"]
+        activities = data["trackResponse"]["shipment"][0]["package"][0]["activity"]
+        latest     = activities[0]
 
-        # --- Enhanced location extraction ---
-        loc_text = ""
-        if "activityLocation" in activity:
-            addr = activity["activityLocation"].get("address", {})
-            parts = [addr.get("city"), addr.get("stateProvince"), addr.get("country")]
-            loc_text = ", ".join([p for p in parts if p])
-        elif "location" in activity:
-            loc = activity["location"]
-            parts = [loc.get("city"), loc.get("stateProvince"), loc.get("country")]
-            loc_text = ", ".join([p for p in parts if p])
+        # Extract status
+        status = latest["status"]["description"]
 
-        return status, loc_text
+        # Extract location (try latest, else fallback to older events)
+        location = extract_location(latest)
+        if not location:
+            for act in activities:
+                location = extract_location(act)
+                if location:
+                    break
+
+        if not location:
+            location = "No location found"
+
+        return status, location
+
     except Exception as e:
-        print("DEBUG UPS RESPONSE:", json.dumps(data, indent=2))
-        return f"Error parsing: {e}", ""
+        print("⚠️ Parsing Error:", e)
+        print("UPS API Raw:", json.dumps(data, indent=2))
+        return f"Error parsing: {e}", "No location found"
+
+
+def extract_location(activity):
+    """Helper: Build a readable location string from activity data"""
+    if "activityLocation" not in activity:
+        return ""
+    addr = activity["activityLocation"].get("address", {})
+    parts = [addr.get("city"), addr.get("stateProvince"), addr.get("country")]
+    return ", ".join([p for p in parts if p])
+
+
+# ==============================================================
+#  SMS Sending
+# ==============================================================
 
 def send_sms(message):
-    msg = client.messages.create(
-        body=message,
-        from_=twilio_number,
-        to=my_number
-    )
-    print("Twilio SID:", msg.sid)
-    print("Twilio status:", msg.status)
+    """Send an SMS via Twilio"""
+    try:
+        msg = twilio_client.messages.create(
+            body=message,
+            from_=TWILIO_NUMBER,
+            to=MY_NUMBER
+        )
+        print(f"📤 SMS Sent | SID: {msg.sid} | Status: {msg.status}")
+    except Exception as e:
+        print("❌ Twilio SMS Error:", e)
+
+
+# ==============================================================
+#  Main Logic
+# ==============================================================
 
 def main():
     global last_status
     token = get_access_token()
-    for idx, tracking in enumerate(tracking_numbers):
-        # Use nickname if provided, else fallback to tracking number
-        if idx < len(tracking_nicknames) and tracking_nicknames[idx].strip():
-            nickname = tracking_nicknames[idx].strip()
-        else:
-            nickname = tracking.strip()
+
+    for idx, tracking in enumerate(TRACKING_NUMBERS):
+        nickname = (
+            TRACKING_NAMES[idx].strip()
+            if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip()
+            else tracking.strip()
+        )
 
         status, location = get_tracking_status(tracking, token)
 
+        # Only send SMS if status changed
         if status and last_status.get(tracking) != status:
-            msg = f"{nickname} Update: {status}"
-            if location:
-                msg += f" ({location})"
-            print(msg)
-            send_sms(msg)
+            message = format_sms(nickname, status, location)
+
+            print("🔔", message.replace("\n", " | "))  # cleaner logs
+            send_sms(message)
+
             last_status[tracking] = status
         else:
-            print(f"No new update for {nickname}: {status}")
+            print(f"ℹ️ No new update for {nickname}: {status}")
 
-    with open(status_file, "w") as f:
+    # Save last known statuses
+    with open(STATUS_FILE, "w") as f:
         json.dump(last_status, f)
 
+
+# ==============================================================
+#  SMS Formatter
+# ==============================================================
+
+def format_sms(nickname, status, location):
+    """Builds a beautified SMS message"""
+    return "\n".join([
+        f"📦 {nickname}",
+        f"Status: {status}",
+        f"Location: {location}"
+    ])
+
+
+# ==============================================================
+#  Run Script
+# ==============================================================
 if __name__ == "__main__":
     main()
