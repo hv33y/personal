@@ -81,16 +81,15 @@ def get_tracking_status(tracking_number, token):
         # Extract status
         status = latest["status"]["description"]
 
-        # Extract location (try latest, else fallback to older events)
+        # Extract location using robust helper
         location = extract_location(latest)
-        if not location:
-            for act in activities:
-                location = extract_location(act)
-                if location:
-                    break
 
-        if not location:
-            location = "No location found"
+        # Fallback: older activities
+        if location == "No location found":
+            for act in activities[1:]:
+                location = extract_location(act)
+                if location != "No location found":
+                    break
 
         return status, location
 
@@ -101,13 +100,40 @@ def get_tracking_status(tracking_number, token):
 
 
 def extract_location(activity):
-    """Helper: Build a readable location string from activity data"""
-    if "activityLocation" not in activity:
-        return ""
-    addr = activity["activityLocation"].get("address", {})
-    parts = [addr.get("city"), addr.get("stateProvince"), addr.get("country")]
-    return ", ".join([p for p in parts if p])
+    """Build a readable location string from activity data with robust fallbacks"""
+    loc_parts = []
 
+    # 1️⃣ Try normal address fields
+    addr = activity.get("activityLocation", {}).get("address", {})
+    for key in ["city", "stateProvince", "country"]:
+        if addr.get(key):
+            loc_parts.append(addr[key])
+
+    # 2️⃣ Try facility description
+    if not loc_parts:
+        desc = activity.get("activityLocation", {}).get("locationTypeDescription")
+        if desc:
+            loc_parts.append(desc)
+
+    # 3️⃣ Try UPS location code
+    if not loc_parts:
+        code = activity.get("activityLocation", {}).get("code")
+        if code:
+            loc_parts.append(code)
+
+    # 4️⃣ Fallback to shipment-level info
+    if not loc_parts:
+        shipment_info = activity.get("shipment", {}).get("shipFrom", {}).get("address", {})
+        if shipment_info:
+            for key in ["city", "stateProvince", "country"]:
+                if shipment_info.get(key):
+                    loc_parts.append(shipment_info[key])
+
+    # Final fallback
+    if not loc_parts:
+        loc_parts.append("No location found")
+
+    return ", ".join(loc_parts)
 
 # ==============================================================
 #  SMS Sending
@@ -125,6 +151,17 @@ def send_sms(message):
     except Exception as e:
         print("❌ Twilio SMS Error:", e)
 
+# ==============================================================
+#  SMS Formatter
+# ==============================================================
+
+def format_sms(nickname, status, location):
+    """Builds a beautified SMS message"""
+    return "\n".join([
+        f"📦 {nickname}",
+        f"Status: {status}",
+        f"Location: {location}"
+    ])
 
 # ==============================================================
 #  Main Logic
@@ -146,10 +183,8 @@ def main():
         # Only send SMS if status changed
         if status and last_status.get(tracking) != status:
             message = format_sms(nickname, status, location)
-
             print("🔔", message.replace("\n", " | "))  # cleaner logs
             send_sms(message)
-
             last_status[tracking] = status
         else:
             print(f"ℹ️ No new update for {nickname}: {status}")
@@ -157,20 +192,6 @@ def main():
     # Save last known statuses
     with open(STATUS_FILE, "w") as f:
         json.dump(last_status, f)
-
-
-# ==============================================================
-#  SMS Formatter
-# ==============================================================
-
-def format_sms(nickname, status, location):
-    """Builds a beautified SMS message"""
-    return "\n".join([
-        f"📦 {nickname}",
-        f"Status: {status}",
-        f"Location: {location}"
-    ])
-
 
 # ==============================================================
 #  Run Script
