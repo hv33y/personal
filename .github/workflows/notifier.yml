@@ -1,8 +1,8 @@
 name: UPS SMS Notifier
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"   # every 10 minutes
+  #schedule:
+   # - cron: "*/10 * * * *"   # every 10 minutes
   workflow_dispatch:          # allow manual run
 
 jobs:
@@ -31,3 +31,4 @@ jobs:
           UPS_CLIENT_ID: ${{ secrets.UPS_CLIENT_ID }}
           UPS_CLIENT_SECRET: ${{ secrets.UPS_CLIENT_SECRET }}
           UPS_TRACKINGS: ${{ secrets.UPS_TRACKINGS }}
+          UPS_NICKNAMES: ${{ secrets.UPS_NICKNAMES }}
