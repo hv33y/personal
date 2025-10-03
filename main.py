@@ -45,8 +45,15 @@ def get_access_token():
     return response.json()["access_token"]
 
 def get_tracking_status(tracking_number, token):
-    url = f"{UPS_TRACK_URL}/{tracking_number.strip()}"
-    headers = {"Authorization": f"Bearer {token}", "transId": str(uuid.uuid4()), "transactionSrc": "ups-telegram-bot"}
+    url = (
+        f"{UPS_TRACK_URL}/{tracking_number.strip()}"
+        "?includeShipFromAddress=true&includeDetailedScans=true&includeDeliveryLocation=true"
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "transId": str(uuid.uuid4()),
+        "transactionSrc": "ups-telegram-bot"
+    }
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     data = response.json()
@@ -131,6 +138,20 @@ def format_message(nickname, status, location, timestamp):
         f"Updated: {timestamp}"
     ])
 
+def format_summary_table():
+    lines = ["📊 UPS Tracking Summary\n"]
+    lines.append(f"{'Nickname':<20} | {'Status':<25} | {'Location':<25} | Updated")
+    lines.append("-" * 90)
+    for idx, tracking in enumerate(TRACKING_NUMBERS):
+        nickname = TRACKING_NAMES[idx].strip() if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip() else tracking.strip()
+        record = last_status.get(tracking, {})
+        status = record.get("status", "No info")
+        location = record.get("location", "—")
+        timestamp = record.get("timestamp", "—")
+        lines.append(f"{nickname:<20} | {status:<25} | {location:<25} | {timestamp}")
+    lines.append("-" * 90)
+    return "\n".join(lines)
+
 # ==============================================================
 # Main UPS Tracking Logic
 # ==============================================================
@@ -139,6 +160,7 @@ def main():
     global last_status
     token = get_access_token()
     now = datetime.now(toronto_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    updates_sent = False
 
     for idx, tracking in enumerate(TRACKING_NUMBERS):
         nickname = TRACKING_NAMES[idx].strip() if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip() else tracking.strip()
@@ -150,11 +172,17 @@ def main():
             print("🔔", message.replace("\n", " | "))
             send_telegram(message)
             last_status[tracking] = {"status": status, "location": location, "timestamp": now}
+            updates_sent = True
         else:
             print(f"ℹ️ No new update for {nickname}: {status}")
 
+    # Save statuses
     with open(STATUS_FILE, "w") as f:
         json.dump(last_status, f, indent=2)
+
+    # Send full summary table
+    summary = format_summary_table()
+    send_telegram(f"📋 Full UPS Tracking Summary:\n\n{summary}")
 
 if __name__ == "__main__":
     main()
