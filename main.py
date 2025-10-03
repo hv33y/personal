@@ -3,18 +3,17 @@ import json
 import uuid
 import base64
 import requests
+import time
 from datetime import datetime
+import pytz
 
 # ==============================================================
-#  Telegram Setup
+#  Telegram & UPS Setup
 # ==============================================================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
-TELEGRAM_URL       = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+TELEGRAM_API_URL   = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-# ==============================================================
-#  UPS API Setup
-# ==============================================================
 UPS_CLIENT_ID     = os.getenv("UPS_CLIENT_ID")
 UPS_CLIENT_SECRET = os.getenv("UPS_CLIENT_SECRET")
 UPS_AUTH_URL      = "https://onlinetools.ups.com/security/v1/oauth/token"
@@ -29,6 +28,9 @@ try:
         last_status = json.load(f)
 except FileNotFoundError:
     last_status = {}
+
+# Toronto timezone
+toronto_tz = pytz.timezone("America/Toronto")
 
 # ==============================================================
 #  UPS Helpers
@@ -61,15 +63,16 @@ def get_tracking_status(tracking_number, token):
         return "No tracking info", "No location found"
 
     try:
-        activities = data["trackResponse"]["shipment"][0]["package"][0]["activity"]
+        shipment_info = data["trackResponse"]["shipment"][0]
+        activities = shipment_info["package"][0]["activity"]
         latest = activities[0]
 
         status = latest["status"]["description"]
-        location = extract_location(latest)
+        location = extract_location(latest, shipment_info)
 
         if location == "No location found":
             for act in activities[1:]:
-                location = extract_location(act)
+                location = extract_location(act, shipment_info)
                 if location != "No location found":
                     break
 
@@ -78,33 +81,35 @@ def get_tracking_status(tracking_number, token):
         print("⚠️ Parsing Error:", e)
         return f"Error parsing: {e}", "No location found"
 
-def extract_location(activity):
+def extract_location(activity, shipment=None):
     loc_parts = []
 
-    # 1️⃣ Address fields
     addr = activity.get("activityLocation", {}).get("address", {})
     for key in ["city", "stateProvince", "country"]:
         if addr.get(key):
             loc_parts.append(addr[key])
 
-    # 2️⃣ Facility description
     if not loc_parts:
         desc = activity.get("activityLocation", {}).get("locationTypeDescription")
         if desc:
             loc_parts.append(desc)
 
-    # 3️⃣ UPS code
     if not loc_parts:
         code = activity.get("activityLocation", {}).get("code")
         if code:
             loc_parts.append(code)
 
-    # 4️⃣ Shipment origin fallback
-    if not loc_parts:
-        shipment_info = activity.get("shipment", {}).get("shipFrom", {}).get("address", {})
+    if not loc_parts and shipment:
+        ship_from = shipment.get("shipFrom", {}).get("address", {})
         for key in ["city", "stateProvince", "country"]:
-            if shipment_info.get(key):
-                loc_parts.append(shipment_info[key])
+            if ship_from.get(key):
+                loc_parts.append(ship_from[key])
+
+    if not loc_parts and shipment:
+        ship_to = shipment.get("shipTo", {}).get("address", {})
+        for key in ["city", "stateProvince", "country"]:
+            if ship_to.get(key):
+                loc_parts.append(ship_to[key])
 
     if not loc_parts:
         loc_parts.append("No location found")
@@ -112,25 +117,27 @@ def extract_location(activity):
     return ", ".join(loc_parts)
 
 # ==============================================================
-#  Telegram Sending
+#  Telegram Messaging
 # ==============================================================
 
-def send_telegram(message):
+def send_telegram(message, reply_markup=None):
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message
     }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        resp = requests.post(TELEGRAM_URL, json=payload)
-        if resp.status_code == 200:
-            print("📤 Telegram message sent!")
-        else:
+        resp = requests.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
+        if resp.status_code != 200:
             print(f"❌ Telegram Error {resp.status_code}: {resp.text}")
+        else:
+            print("📤 Telegram message sent!")
     except Exception as e:
         print("❌ Telegram Exception:", e)
 
 # ==============================================================
-#  Message Formatter
+#  Message & Table Formatting
 # ==============================================================
 
 def format_message(nickname, status, location, timestamp):
@@ -141,16 +148,11 @@ def format_message(nickname, status, location, timestamp):
         f"Updated: {timestamp}"
     ])
 
-# ==============================================================
-#  Status Table Printer
-# ==============================================================
-
-def print_status_table():
-    """Prints a clean table of tracking numbers, status, location, and last update"""
-    print("\n📊 UPS Tracking Status Table")
-    print("-" * 80)
-    print(f"{'Nickname':<20} | {'Status':<25} | {'Location':<25} | {'Updated'}")
-    print("-" * 80)
+def format_status_table():
+    table_lines = []
+    table_lines.append("📊 UPS Tracking Status Table\n")
+    table_lines.append(f"{'Nickname':<20} | {'Status':<25} | {'Location':<25} | Updated")
+    table_lines.append("-" * 80)
     for idx, tracking in enumerate(TRACKING_NUMBERS):
         nickname = (
             TRACKING_NAMES[idx].strip()
@@ -161,17 +163,18 @@ def print_status_table():
         status = record.get("status", "No info")
         location = record.get("location", "—")
         timestamp = record.get("timestamp", "—")
-        print(f"{nickname:<20} | {status:<25} | {location:<25} | {timestamp}")
-    print("-" * 80 + "\n")
+        table_lines.append(f"{nickname:<20} | {status:<25} | {location:<25} | {timestamp}")
+    table_lines.append("-" * 80)
+    return "\n".join(table_lines)
 
 # ==============================================================
-#  Main Logic
+#  UPS Tracking Logic
 # ==============================================================
 
-def main():
+def run_tracking():
     global last_status
     token = get_access_token()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now(toronto_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
     for idx, tracking in enumerate(TRACKING_NUMBERS):
         nickname = (
@@ -181,8 +184,8 @@ def main():
         )
 
         status, location = get_tracking_status(tracking, token)
-
         previous_status = last_status.get(tracking, {}).get("status")
+
         if status and previous_status != status:
             message = format_message(nickname, status, location, now)
             print("🔔", message.replace("\n", " | "))
@@ -191,16 +194,74 @@ def main():
         else:
             print(f"ℹ️ No new update for {nickname}: {status}")
 
-    # Save last known statuses
     with open(STATUS_FILE, "w") as f:
         json.dump(last_status, f, indent=2)
 
-    # Print table for logs
-    print_status_table()
+# ==============================================================
+#  Telegram Inline Button Handling
+# ==============================================================
+
+def get_updates(offset=None):
+    url = f"{TELEGRAM_API_URL}/getUpdates?timeout=10"
+    if offset:
+        url += f"&offset={offset}"
+    resp = requests.get(url)
+    return resp.json()
+
+def handle_message(update):
+    if "message" in update:
+        msg = update["message"]
+        text = msg.get("text", "")
+        chat_id = msg["chat"]["id"]
+
+        if text == "/update":
+            send_telegram("🔄 Running manual UPS update...")
+            run_tracking()
+            table = format_status_table()
+            send_telegram(f"✅ Manual update completed:\n\n{table}")
+            send_update_button(chat_id)
+
+    elif "callback_query" in update:
+        callback = update["callback_query"]
+        data = callback["data"]
+        chat_id = callback["message"]["chat"]["id"]
+
+        if data == "update_now":
+            send_telegram("🔄 Running UPS update from button...")
+            run_tracking()
+            table = format_status_table()
+            send_telegram(f"✅ Manual update completed:\n\n{table}")
+            send_update_button(chat_id)
+
+def send_update_button(chat_id):
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "Update Now 🔄", "callback_data": "update_now"}]
+        ]
+    }
+    send_telegram("Tap the button below to manually update UPS tracking:", reply_markup=keyboard)
 
 # ==============================================================
-#  Run Script
+#  Polling Loop
+# ==============================================================
+
+def start_polling():
+    last_update_id = None
+    while True:
+        updates = get_updates(last_update_id)
+        for update in updates.get("result", []):
+            last_update_id = update["update_id"] + 1
+            handle_message(update)
+        time.sleep(2)
+
+# ==============================================================
+#  Entry Point
 # ==============================================================
 
 if __name__ == "__main__":
-    main()
+    # Run initial tracking
+    run_tracking()
+    # Send initial inline button
+    send_update_button(TELEGRAM_CHAT_ID)
+    # Start listening for button presses or /update command
+    start_polling()
