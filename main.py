@@ -65,12 +65,16 @@ def get_tracking_status(tracking_number, token):
         activity = data["trackResponse"]["shipment"][0]["package"][0]["activity"][0]
         status = activity["status"]["description"]
 
-        # Location info if available
-        location = activity.get("activityLocation", {}).get("address", {})
-        city = location.get("city", "")
-        state = location.get("stateProvince", "")
-        country = location.get("country", "")
-        loc_text = ", ".join(filter(None, [city, state, country]))
+        # --- Enhanced location extraction ---
+        loc_text = ""
+        if "activityLocation" in activity:
+            addr = activity["activityLocation"].get("address", {})
+            parts = [addr.get("city"), addr.get("stateProvince"), addr.get("country")]
+            loc_text = ", ".join([p for p in parts if p])
+        elif "location" in activity:
+            loc = activity["location"]
+            parts = [loc.get("city"), loc.get("stateProvince"), loc.get("country")]
+            loc_text = ", ".join([p for p in parts if p])
 
         return status, loc_text
     except Exception as e:
