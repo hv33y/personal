@@ -3,6 +3,7 @@ import json
 import uuid
 import base64
 import requests
+from datetime import datetime
 
 # ==============================================================
 #  Telegram Setup
@@ -132,11 +133,12 @@ def send_telegram(message):
 #  Message Formatter
 # ==============================================================
 
-def format_message(nickname, status, location):
+def format_message(nickname, status, location, timestamp):
     return "\n".join([
         f"📦 {nickname}",
         f"Status: {status}",
-        f"Location: {location}"
+        f"Location: {location}",
+        f"Updated: {timestamp}"
     ])
 
 # ==============================================================
@@ -144,21 +146,23 @@ def format_message(nickname, status, location):
 # ==============================================================
 
 def print_status_table():
-    """Prints a clean table of tracking numbers and their last known status and location"""
+    """Prints a clean table of tracking numbers, status, location, and last update"""
     print("\n📊 UPS Tracking Status Table")
-    print("-" * 60)
-    print(f"{'Nickname':<20} | {'Status':<25} | {'Location'}")
-    print("-" * 60)
+    print("-" * 80)
+    print(f"{'Nickname':<20} | {'Status':<25} | {'Location':<25} | {'Updated'}")
+    print("-" * 80)
     for idx, tracking in enumerate(TRACKING_NUMBERS):
         nickname = (
             TRACKING_NAMES[idx].strip()
             if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip()
             else tracking.strip()
         )
-        status = last_status.get(tracking, {}).get("status") if isinstance(last_status.get(tracking), dict) else last_status.get(tracking, "No info")
-        location = last_status.get(tracking, {}).get("location") if isinstance(last_status.get(tracking), dict) else "—"
-        print(f"{nickname:<20} | {status:<25} | {location}")
-    print("-" * 60 + "\n")
+        record = last_status.get(tracking, {})
+        status = record.get("status", "No info")
+        location = record.get("location", "—")
+        timestamp = record.get("timestamp", "—")
+        print(f"{nickname:<20} | {status:<25} | {location:<25} | {timestamp}")
+    print("-" * 80 + "\n")
 
 # ==============================================================
 #  Main Logic
@@ -167,6 +171,7 @@ def print_status_table():
 def main():
     global last_status
     token = get_access_token()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     for idx, tracking in enumerate(TRACKING_NUMBERS):
         nickname = (
@@ -177,14 +182,12 @@ def main():
 
         status, location = get_tracking_status(tracking, token)
 
-        # Only send Telegram if status changed
-        previous_status = last_status.get(tracking, {}).get("status") if isinstance(last_status.get(tracking), dict) else last_status.get(tracking)
+        previous_status = last_status.get(tracking, {}).get("status")
         if status and previous_status != status:
-            message = format_message(nickname, status, location)
+            message = format_message(nickname, status, location, now)
             print("🔔", message.replace("\n", " | "))
             send_telegram(message)
-            # Save as dict to track status and location
-            last_status[tracking] = {"status": status, "location": location}
+            last_status[tracking] = {"status": status, "location": location, "timestamp": now}
         else:
             print(f"ℹ️ No new update for {nickname}: {status}")
 
