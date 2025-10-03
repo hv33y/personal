@@ -3,13 +3,13 @@ import json
 import uuid
 import base64
 import requests
-import time
 from datetime import datetime
 import pytz
 
 # ==============================================================
-#  Telegram & UPS Setup
+# Telegram & UPS Setup
 # ==============================================================
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_API_URL   = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -29,20 +29,16 @@ try:
 except FileNotFoundError:
     last_status = {}
 
-# Toronto timezone
 toronto_tz = pytz.timezone("America/Toronto")
 
 # ==============================================================
-#  UPS Helpers
+# UPS Helpers
 # ==============================================================
 
 def get_access_token():
     creds = f"{UPS_CLIENT_ID}:{UPS_CLIENT_SECRET}"
     b64_creds = base64.b64encode(creds.encode()).decode()
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {b64_creds}"
-    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {b64_creds}"}
     data = {"grant_type": "client_credentials"}
     response = requests.post(UPS_AUTH_URL, headers=headers, data=data)
     response.raise_for_status()
@@ -50,11 +46,7 @@ def get_access_token():
 
 def get_tracking_status(tracking_number, token):
     url = f"{UPS_TRACK_URL}/{tracking_number.strip()}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "transId": str(uuid.uuid4()),
-        "transactionSrc": "ups-telegram-bot"
-    }
+    headers = {"Authorization": f"Bearer {token}", "transId": str(uuid.uuid4()), "transactionSrc": "ups-telegram-bot"}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     data = response.json()
@@ -117,16 +109,11 @@ def extract_location(activity, shipment=None):
     return ", ".join(loc_parts)
 
 # ==============================================================
-#  Telegram Messaging
+# Telegram
 # ==============================================================
 
-def send_telegram(message, reply_markup=None):
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
+def send_telegram(message):
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
         resp = requests.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload)
         if resp.status_code != 200:
@@ -136,10 +123,6 @@ def send_telegram(message, reply_markup=None):
     except Exception as e:
         print("❌ Telegram Exception:", e)
 
-# ==============================================================
-#  Message & Table Formatting
-# ==============================================================
-
 def format_message(nickname, status, location, timestamp):
     return "\n".join([
         f"📦 {nickname}",
@@ -148,41 +131,17 @@ def format_message(nickname, status, location, timestamp):
         f"Updated: {timestamp}"
     ])
 
-def format_status_table():
-    table_lines = []
-    table_lines.append("📊 UPS Tracking Status Table\n")
-    table_lines.append(f"{'Nickname':<20} | {'Status':<25} | {'Location':<25} | Updated")
-    table_lines.append("-" * 80)
-    for idx, tracking in enumerate(TRACKING_NUMBERS):
-        nickname = (
-            TRACKING_NAMES[idx].strip()
-            if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip()
-            else tracking.strip()
-        )
-        record = last_status.get(tracking, {})
-        status = record.get("status", "No info")
-        location = record.get("location", "—")
-        timestamp = record.get("timestamp", "—")
-        table_lines.append(f"{nickname:<20} | {status:<25} | {location:<25} | {timestamp}")
-    table_lines.append("-" * 80)
-    return "\n".join(table_lines)
-
 # ==============================================================
-#  UPS Tracking Logic
+# Main UPS Tracking Logic
 # ==============================================================
 
-def run_tracking():
+def main():
     global last_status
     token = get_access_token()
     now = datetime.now(toronto_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
     for idx, tracking in enumerate(TRACKING_NUMBERS):
-        nickname = (
-            TRACKING_NAMES[idx].strip()
-            if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip()
-            else tracking.strip()
-        )
-
+        nickname = TRACKING_NAMES[idx].strip() if idx < len(TRACKING_NAMES) and TRACKING_NAMES[idx].strip() else tracking.strip()
         status, location = get_tracking_status(tracking, token)
         previous_status = last_status.get(tracking, {}).get("status")
 
@@ -197,71 +156,5 @@ def run_tracking():
     with open(STATUS_FILE, "w") as f:
         json.dump(last_status, f, indent=2)
 
-# ==============================================================
-#  Telegram Inline Button Handling
-# ==============================================================
-
-def get_updates(offset=None):
-    url = f"{TELEGRAM_API_URL}/getUpdates?timeout=10"
-    if offset:
-        url += f"&offset={offset}"
-    resp = requests.get(url)
-    return resp.json()
-
-def handle_message(update):
-    if "message" in update:
-        msg = update["message"]
-        text = msg.get("text", "")
-        chat_id = msg["chat"]["id"]
-
-        if text == "/update":
-            send_telegram("🔄 Running manual UPS update...")
-            run_tracking()
-            table = format_status_table()
-            send_telegram(f"✅ Manual update completed:\n\n{table}")
-            send_update_button(chat_id)
-
-    elif "callback_query" in update:
-        callback = update["callback_query"]
-        data = callback["data"]
-        chat_id = callback["message"]["chat"]["id"]
-
-        if data == "update_now":
-            send_telegram("🔄 Running UPS update from button...")
-            run_tracking()
-            table = format_status_table()
-            send_telegram(f"✅ Manual update completed:\n\n{table}")
-            send_update_button(chat_id)
-
-def send_update_button(chat_id):
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "Update Now 🔄", "callback_data": "update_now"}]
-        ]
-    }
-    send_telegram("Tap the button below to manually update UPS tracking:", reply_markup=keyboard)
-
-# ==============================================================
-#  Polling Loop
-# ==============================================================
-
-def start_polling():
-    last_update_id = None
-    while True:
-        updates = get_updates(last_update_id)
-        for update in updates.get("result", []):
-            last_update_id = update["update_id"] + 1
-            handle_message(update)
-        time.sleep(2)
-
-# ==============================================================
-#  Entry Point
-# ==============================================================
-
 if __name__ == "__main__":
-    # Run initial tracking
-    run_tracking()
-    # Send initial inline button
-    send_update_button(TELEGRAM_CHAT_ID)
-    # Start listening for button presses or /update command
-    start_polling()
+    main()
